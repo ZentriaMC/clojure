@@ -6609,6 +6609,7 @@ public static class LocalBinding{
 	public final String name;
 	public final boolean isArg;
     public final PathNode clearPathRoot;
+	private final int hash;
 	public boolean canBeCleared = !RT.booleanCast(getCompilerOption(disableLocalsClearingKey));
 	public boolean recurMistmatch = false;
     public boolean used = false;
@@ -6622,8 +6623,9 @@ public static class LocalBinding{
 		this.tag = tag;
 		this.init = init;
 		this.isArg = isArg;
-        this.clearPathRoot = clearPathRoot;
+		this.clearPathRoot = clearPathRoot;
 		name = munge(sym.name);
+		hash = 31 * num + (sym == null ? 0 : sym.hashCode());
 	}
 
 	/**
@@ -6633,12 +6635,14 @@ public static class LocalBinding{
 	 * bindings must never compare equal), but the default Object hash is based
 	 * on the JVM identity hash and can vary from run to run.  Compiler maps such
 	 * as CLEAR_SITES use iteration order when emitting fields and clear-sites;
-	 * derive the hash from source-stable binding data instead.  Equal identity
-	 * keys still have equal hashes, while distinct bindings may safely collide.
+	 * derive the hash from source-stable binding data instead.  Cache the
+	 * constructor-time index because idx is adjusted for direct-linked methods
+	 * later in compilation.  Equal identity keys still have equal hashes, while
+	 * distinct bindings may safely collide.
 	 */
 	@Override
 	public int hashCode() {
-		return 31 * idx + (sym == null ? 0 : sym.hashCode());
+		return hash;
 	}
 
     Boolean hjc;
