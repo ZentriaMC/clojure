@@ -42,6 +42,8 @@ import org.objectweb.asm.util.CheckClassAdapter;
 
 public class Compiler implements Opcodes{
 	private static String stableID(String kind, Object form) {
+		if (!Boolean.getBoolean("clojure.compiler.deterministic-names"))
+			return Integer.toString(RT.nextID());
 		Object path = SOURCE_PATH.deref();
 		Object line = LINE_BEFORE.deref();
 		Object col = COLUMN_BEFORE.deref();
