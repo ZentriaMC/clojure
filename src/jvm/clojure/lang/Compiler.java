@@ -54,7 +54,16 @@ public class Compiler implements Opcodes{
 		IPersistentMap meta = RT.meta(form);
 		Object line = RT.get(meta, RT.LINE_KEY, LINE_BEFORE.deref());
 		Object col = RT.get(meta, RT.COLUMN_KEY, COLUMN_BEFORE.deref());
-		String key = String.valueOf(path) + ':' + String.valueOf(line) + ':' + String.valueOf(col) + ':' + kind + ':' + String.valueOf(form);
+		String location = String.valueOf(path) + ':' + String.valueOf(line) + ':' + String.valueOf(col) + ':' + kind;
+		Map<String,Integer> counts = (Map<String,Integer>) DETERMINISTIC_NAME_COUNTS.deref();
+		Integer occurrence = counts.get(location);
+		if(occurrence == null)
+			occurrence = 0;
+		counts.put(location, occurrence + 1);
+		// Macroexpansion can produce multiple generated classes with the same source
+		// metadata. A per-compilation occurrence keeps those names unique without making
+		// them depend on compiler activity in this or any other JVM.
+		String key = location + ':' + occurrence;
 		try {
 			byte[] digest = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
 			StringBuilder id = new StringBuilder(24);
@@ -262,6 +271,9 @@ static final public Var IN_CATCH_FINALLY = Var.create(null).setDynamic();
 static final public Var METHOD_RETURN_CONTEXT = Var.create(null).setDynamic();
 
 static final public Var NO_RECUR = Var.create(null).setDynamic();
+
+// source location -> next occurrence, scoped to one load/compile operation
+static final private Var DETERMINISTIC_NAME_COUNTS = Var.create().setDynamic();
 
 //DynamicClassLoader
 static final public Var LOADER = Var.create().setDynamic();
@@ -7750,7 +7762,10 @@ public static Object eval(Object form, boolean freshLoader) {
 	boolean createdLoader = false;
 	if(true)//!LOADER.isBound())
 		{
-		Var.pushThreadBindings(RT.map(LOADER, RT.makeClassLoader()));
+		IPersistentMap bindings = RT.map(LOADER, RT.makeClassLoader());
+		if(freshLoader || !DETERMINISTIC_NAME_COUNTS.isBound())
+			bindings = bindings.assoc(DETERMINISTIC_NAME_COUNTS, new HashMap<String,Integer>());
+		Var.pushThreadBindings(bindings);
 		createdLoader = true;
 		}
 	try
@@ -8228,6 +8243,7 @@ public static Object load(Reader rdr, String sourcePath, String sourceName) {
 	consumeWhitespaces(pushbackReader);
 	Var.pushThreadBindings(
 			RT.mapUniqueKeys(LOADER, RT.makeClassLoader(),
+			       DETERMINISTIC_NAME_COUNTS, new HashMap<String,Integer>(),
 			       SOURCE_PATH, sourcePath,
 			       SOURCE, sourceName,
 			       METHOD, null,
@@ -8370,6 +8386,7 @@ public static Object compile(Reader rdr, String sourcePath, String sourceName) t
 	Var.pushThreadBindings(
 			RT.mapUniqueKeys(SOURCE_PATH, sourcePath,
 			       SOURCE, sourceName,
+			       DETERMINISTIC_NAME_COUNTS, new HashMap<String,Integer>(),
 			       METHOD, null,
 			       LOCAL_ENV, null,
 					LOOP_LOCALS, null,
