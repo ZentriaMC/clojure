@@ -6628,6 +6628,21 @@ public static class LocalBinding{
 		name = munge(sym.name);
 	}
 
+	/**
+	 * Keep persistent maps keyed by LocalBinding stable across JVMs.
+	 *
+	 * LocalBinding deliberately retains identity equality (different lexical
+	 * bindings must never compare equal), but the default Object hash is based
+	 * on the JVM identity hash and can vary from run to run.  Compiler maps such
+	 * as CLEAR_SITES use iteration order when emitting fields and clear-sites;
+	 * derive the hash from source-stable binding data instead.  Equal identity
+	 * keys still have equal hashes, while distinct bindings may safely collide.
+	 */
+	@Override
+	public int hashCode() {
+		return 31 * idx + (sym == null ? 0 : sym.hashCode());
+	}
+
     Boolean hjc;
 
 	public boolean hasJavaClass() {
