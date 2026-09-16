@@ -85,6 +85,25 @@
                                             "deterministic-names.clj")))))]
       (is (= 2 (count (distinct names)))))))
 
+(deftest deterministic-generated-names-distinguish-macro-occurrences
+  (testing "generated forms sharing source metadata get stable, distinct names"
+    (let [class-names #(with-system-property
+                         deterministic-name-property "true"
+                         (fn []
+                           (let [fn-form (fn []
+                                           (with-meta (list 'fn* [] 1)
+                                                      {:line 1 :column 1}))]
+                             (mapv (comp (fn [^Class c] (.getName c)) class)
+                                   (Compiler/eval
+                                    (with-meta (list 'vector
+                                                     (fn-form)
+                                                     (fn-form))
+                                               {:line 1 :column 1}))))))
+          first-names (class-names)
+          second-names (class-names)]
+      (is (= 2 (count (distinct first-names))))
+      (is (= first-names second-names)))))
+
 (deftest legacy-generated-names-remain-order-dependent
   (testing "the opt-in property does not alter the existing default naming scheme"
     (let [source "(fn [x] (+ x 1))"
