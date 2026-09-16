@@ -44,6 +44,26 @@ import org.objectweb.asm.util.CheckClassAdapter;
 //*/
 
 public class Compiler implements Opcodes{
+	// Syntax-quote auto-gensyms end in __<RT.nextID>__auto__. Explicit gensym
+	// prefixes ending in "__" (including the default "G__") end in <RT.nextID>.
+	// Match those language-level shapes rather than names chosen by individual macros.
+	private static final Pattern AUTO_GENSYM_NAME = Pattern.compile("(.+)__\\d+__auto__");
+	private static final Pattern NUMBERED_GENSYM_NAME = Pattern.compile("(.+__)\\d+");
+
+	private static boolean syntheticName(String name) {
+		return AUTO_GENSYM_NAME.matcher(name).matches() || NUMBERED_GENSYM_NAME.matcher(name).matches();
+	}
+
+	private static String stableSyntheticName(String name, Object form) {
+		Matcher auto = AUTO_GENSYM_NAME.matcher(name);
+		if(auto.matches())
+			return auto.group(1) + "__" + stableID("gensym", form) + "__auto__";
+		Matcher numbered = NUMBERED_GENSYM_NAME.matcher(name);
+		if(numbered.matches())
+			return numbered.group(1) + stableID("gensym", form);
+		return name;
+	}
+
 	private static String stableID(String kind, Object form) {
 		if (!Boolean.getBoolean("clojure.compiler.deterministic-names"))
 			return Integer.toString(RT.nextID());
@@ -4529,6 +4549,7 @@ static public class FnExpr extends ObjExpr{
 	private boolean hasPrimSigs;
 	private boolean hasMeta;
     private boolean hasEnclosingMethod;
+	private String rootName;
 	//	String superName = null;
     Class jc;
 
@@ -4587,25 +4608,42 @@ static public class FnExpr extends ObjExpr{
 			}
 		//fn.thisName = name;
 
-		String basename = (enclosingMethod != null ?
-		                  enclosingMethod.objx.name
-		                  : (munge(currentNS().name.name))) + "$";
+		String basename;
+		if(enclosingMethod == null)
+			basename = munge(currentNS().name.name) + "$";
+		else if(Boolean.getBoolean("clojure.compiler.deterministic-names")
+		        && enclosingMethod.objx instanceof FnExpr)
+			// Stable IDs are much longer than RT.nextID values. Keep nested function
+			// names anchored to their outer function instead of accumulating every
+			// intermediate name until the class filename exceeds filesystem limits.
+			basename = ((FnExpr) enclosingMethod.objx).rootName + "$";
+		else
+			basename = enclosingMethod.objx.name + "$";
 
 		Symbol nm = null;
 
 		if(RT.second(form) instanceof Symbol) {
 			nm = (Symbol) RT.second(form);
-			name = nm.name + "__" + stableID("fn", form);
+			name = (Boolean.getBoolean("clojure.compiler.deterministic-names") && syntheticName(nm.name))
+				? stableSyntheticName(nm.name, form) + "__" + stableID("fn", form)
+				: nm.name + "__" + stableID("fn", form);
 		} else {
 			if(name == null)
 				name = "fn__" + stableID("fn", form);
 			else if (enclosingMethod != null)
-				name += "__" + stableID("nested-fn", form);
+				name = (Boolean.getBoolean("clojure.compiler.deterministic-names") && syntheticName(name))
+				       ? stableSyntheticName(name, form) + "__" + stableID("nested-fn", form)
+				       : name + "__" + stableID("nested-fn", form);
 		}
 
 		String simpleName = munge(name).replace(".", "_DOT_");
 
 		fn.name = basename + simpleName;
+		fn.rootName = Boolean.getBoolean("clojure.compiler.deterministic-names")
+		              && enclosingMethod != null
+		              && enclosingMethod.objx instanceof FnExpr
+		              ? ((FnExpr) enclosingMethod.objx).rootName
+		              : fn.name;
 		fn.internalName = fn.name.replace('.', '/');
 		fn.objtype = Type.getObjectType(fn.internalName);
 		ArrayList<String> prims = new ArrayList();

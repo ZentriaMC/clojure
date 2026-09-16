@@ -104,6 +104,54 @@
       (is (= 2 (count (distinct first-names))))
       (is (= first-names second-names)))))
 
+(deftest deterministic-generated-names-preserve-gensym-prefixes
+  (testing "volatile gensym IDs are replaced without discarding readable prefixes"
+    (let [class-names #(with-system-property
+                         deterministic-name-property "true"
+                         (fn []
+                           (let [fn-form (fn [name]
+                                           (with-meta (if name
+                                                        (list 'fn* name [] 1)
+                                                        (list 'fn* [] 1))
+                                                      {:line 1 :column 1}))
+                                 contextual (with-meta
+                                              (list 'let* [(symbol "G__456")
+                                                           (fn-form nil)]
+                                                    (symbol "G__456"))
+                                              {:line 1 :column 1})]
+                             (mapv (comp (fn [^Class c] (.getName c)) class)
+                                   (Compiler/eval
+                                    (with-meta (list 'vector
+                                                     (fn-form (symbol "G__123"))
+                                                     (fn-form (symbol "state-machine__123__auto__"))
+                                                     (fn-form (symbol "loading__123__auto__"))
+                                                     contextual)
+                                               {:line 1 :column 1}))))))
+          names (class-names)]
+      (is (= 4 (count (distinct names))))
+      (is (= 2 (count (filter #(re-find #"\$G__[0-9a-f]{24}__[0-9a-f]{24}$" %) names))))
+      (is (= 1 (count (filter #(re-find #"\$state_machine__[0-9a-f]{24}__auto____[0-9a-f]{24}$" %) names))))
+      (is (= 1 (count (filter #(re-find #"\$loading__[0-9a-f]{24}__auto____[0-9a-f]{24}$" %) names)))))))
+
+(deftest deterministic-generated-names-bound-nested-context
+  (testing "nested generated names do not accumulate into overlong class filenames"
+    (let [f (with-system-property
+              deterministic-name-property "true"
+              #(let [loader (DynamicClassLoader.)]
+                 (with-bindings {Compiler/LOADER loader}
+                   (Compiler/load
+                     (java.io.StringReader.
+                       "(fn root [] (fn iter__1 [] (fn iter__2 [] (fn iter__3 [] (fn iter__4 [] nil)))))")
+                     "/deterministic-names.clj"
+                     "deterministic-names.clj"))))
+          names (loop [value f, ret []]
+                  (if value
+                    (recur (value) (conj ret (.getName (class value))))
+                    ret))]
+      (is (= 5 (count (distinct names))))
+      (is (every? #(<= (count %) 255) names))
+      (is (every? #(= 1 (count (re-seq #"\$iter__" %))) (rest names))))))
+
 (deftest legacy-generated-names-remain-order-dependent
   (testing "the opt-in property does not alter the existing default naming scheme"
     (let [source "(fn [x] (+ x 1))"
