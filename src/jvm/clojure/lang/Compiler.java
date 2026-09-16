@@ -6613,7 +6613,7 @@ public static class LocalBinding{
 	public boolean recurMistmatch = false;
     public boolean used = false;
 
-    public LocalBinding(int num, Symbol sym, Symbol tag, Expr init, boolean isArg,PathNode clearPathRoot)
+	public LocalBinding(int num, Symbol sym, Symbol tag, Expr init, boolean isArg,PathNode clearPathRoot)
                 {
 		if(maybePrimitiveType(init) != null && tag != null)
 			throw new UnsupportedOperationException("Can't type hint a local with a primitive initializer");
@@ -6624,6 +6624,21 @@ public static class LocalBinding{
 		this.isArg = isArg;
         this.clearPathRoot = clearPathRoot;
 		name = munge(sym.name);
+	}
+
+	/**
+	 * Keep persistent maps keyed by LocalBinding stable across JVMs.
+	 *
+	 * LocalBinding deliberately retains identity equality (different lexical
+	 * bindings must never compare equal), but the default Object hash is based
+	 * on the JVM identity hash and can vary from run to run.  Compiler maps such
+	 * as CLEAR_SITES use iteration order when emitting fields and clear-sites;
+	 * derive the hash from source-stable binding data instead.  Equal identity
+	 * keys still have equal hashes, while distinct bindings may safely collide.
+	 */
+	@Override
+	public int hashCode() {
+		return 31 * idx + (sym == null ? 0 : sym.hashCode());
 	}
 
     Boolean hjc;

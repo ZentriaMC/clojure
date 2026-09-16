@@ -10,7 +10,7 @@
 
 
 (ns clojure.test-clojure.compilation
-  (:import (clojure.lang Compiler Compiler$CompilerException DynamicClassLoader))
+  (:import (clojure.lang Compiler Compiler$CompilerException Compiler$LocalBinding DynamicClassLoader))
   (:require [clojure.test.generative :refer (defspec)]
             [clojure.data.generators :as gen]
             [clojure.test-clojure.compilation.line-number-examples :as line])
@@ -161,6 +161,15 @@
                        #(loaded-class-name "(fn [x] (- x 1))" source))]
       (is (not= without-prior with-prior))
       (is (re-find #"\$fn__\d+$" without-prior)))))
+
+(deftest local-binding-hashes-are-stable-with-identity-keys
+  (testing "compiler maps can use stable hashes without merging lexical bindings"
+    (let [sym (clojure.lang.Symbol/intern "x")
+          first-binding (Compiler$LocalBinding. 1 sym nil nil false nil)
+          second-binding (Compiler$LocalBinding. 1 sym nil nil false nil)]
+      (is (= (.hashCode first-binding) (.hashCode second-binding)))
+      (is (not= first-binding second-binding))
+      (is (= 2 (count {first-binding :first second-binding :second}))))))
 
 
 (deftest test-compiler-metadata
