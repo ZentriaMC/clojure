@@ -24,6 +24,9 @@ import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Executable;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
@@ -44,11 +47,27 @@ public class Compiler implements Opcodes{
 	private static String stableID(String kind, Object form) {
 		if (!Boolean.getBoolean("clojure.compiler.deterministic-names"))
 			return Integer.toString(RT.nextID());
-		Object path = SOURCE_PATH.deref();
-		Object line = LINE_BEFORE.deref();
-		Object col = COLUMN_BEFORE.deref();
+		// SOURCE is the logical source name (for example, "foo.clj"). SOURCE_PATH is
+		// often an absolute build-machine path, which would make AOT class names differ
+		// when the same source is compiled in another checkout.
+		Object path = SOURCE.deref();
+		IPersistentMap meta = RT.meta(form);
+		Object line = RT.get(meta, RT.LINE_KEY, LINE_BEFORE.deref());
+		Object col = RT.get(meta, RT.COLUMN_KEY, COLUMN_BEFORE.deref());
 		String key = String.valueOf(path) + ':' + String.valueOf(line) + ':' + String.valueOf(col) + ':' + kind + ':' + String.valueOf(form);
-		return Integer.toUnsignedString(key.hashCode(), 36);
+		try {
+			byte[] digest = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+			StringBuilder id = new StringBuilder(24);
+			for(int i = 0; i < 12; i++) {
+				int b = digest[i] & 0xff;
+				id.append(Character.forDigit(b >>> 4, 16));
+				id.append(Character.forDigit(b & 0xf, 16));
+			}
+			return id.toString();
+		}
+		catch(NoSuchAlgorithmException e) {
+			throw new RuntimeException(e);
+		}
 	}
 
 static final Symbol DEF = Symbol.intern("def");

@@ -10,7 +10,7 @@
 
 
 (ns clojure.test-clojure.compilation
-  (:import (clojure.lang Compiler Compiler$CompilerException))
+  (:import (clojure.lang Compiler Compiler$CompilerException DynamicClassLoader))
   (:require [clojure.test.generative :refer (defspec)]
             [clojure.data.generators :as gen]
             [clojure.test-clojure.compilation.line-number-examples :as line])
@@ -21,6 +21,79 @@
 
 ; compile
 ; gen-class, gen-interface
+
+(def ^:private deterministic-name-property
+  "clojure.compiler.deterministic-names")
+
+(defn- with-system-property
+  [property value f]
+  (let [previous (System/getProperty property)]
+    (try
+      (if (nil? value)
+        (System/clearProperty property)
+        (System/setProperty property value))
+      (f)
+      (finally
+        (if (nil? previous)
+          (System/clearProperty property)
+          (System/setProperty property previous))))))
+
+(defn- loaded-class-name
+  "Load one expression under an isolated compiler classloader and return its class name.
+
+  `before` is compiled in the same JVM before the expression under test.  This deliberately
+  exercises the compile-order sensitivity of the legacy RT.nextID-based names."
+  ([before source]
+   (loaded-class-name "/deterministic-names.clj" before source))
+  ([path before source]
+   (let [loader (DynamicClassLoader.)]
+     (with-bindings {Compiler/LOADER loader}
+       (when before
+         (Compiler/load (java.io.StringReader. before) path "deterministic-names.clj"))
+       (.getName
+        (class (Compiler/load (java.io.StringReader. source) path "deterministic-names.clj")))))))
+
+(deftest deterministic-generated-names-ignore-compile-order
+  (testing "deterministic names are independent of unrelated prior compilation"
+    (let [source "(fn [x] (+ x 1))"
+          without-prior (with-system-property deterministic-name-property "true"
+                          #(loaded-class-name nil source))
+          with-prior (with-system-property deterministic-name-property "true"
+                       #(loaded-class-name "(fn [x] (- x 1))" source))]
+      (is (= without-prior with-prior))
+      (is (re-find #"\$fn__[^$]+$" without-prior)))))
+
+(deftest deterministic-generated-names-ignore-build-path
+  (testing "deterministic names use the logical source name, not an absolute checkout path"
+    (let [source "(fn [x] (+ x 1))"
+          first-path (with-system-property deterministic-name-property "true"
+                       #(loaded-class-name "/checkout-a/scripts/example.clj" nil source))
+          second-path (with-system-property deterministic-name-property "true"
+                        #(loaded-class-name "/checkout-b/scripts/example.clj" nil source))]
+      (is (= first-path second-path)))))
+
+(deftest deterministic-generated-names-distinguish-source-locations
+  (testing "identical anonymous forms in one expression do not define the same class twice"
+    (let [names (with-system-property
+                  deterministic-name-property "true"
+                  #(let [loader (DynamicClassLoader.)
+                         source "[(fn [x] x) (fn [x] x)]"]
+                     (with-bindings {Compiler/LOADER loader}
+                       (mapv (comp (fn [^Class c] (.getName c)) class)
+                             (Compiler/load (java.io.StringReader. source)
+                                            "/deterministic-names.clj"
+                                            "deterministic-names.clj")))))]
+      (is (= 2 (count (distinct names)))))))
+
+(deftest legacy-generated-names-remain-order-dependent
+  (testing "the opt-in property does not alter the existing default naming scheme"
+    (let [source "(fn [x] (+ x 1))"
+          without-prior (with-system-property deterministic-name-property nil
+                          #(loaded-class-name nil source))
+          with-prior (with-system-property deterministic-name-property nil
+                       #(loaded-class-name "(fn [x] (- x 1))" source))]
+      (is (not= without-prior with-prior))
+      (is (re-find #"\$fn__\d+$" without-prior)))))
 
 
 (deftest test-compiler-metadata
