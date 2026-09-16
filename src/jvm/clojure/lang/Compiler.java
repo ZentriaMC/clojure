@@ -41,6 +41,13 @@ import org.objectweb.asm.util.CheckClassAdapter;
 //*/
 
 public class Compiler implements Opcodes{
+	private static String stableID(String kind, Object form) {
+		Object path = SOURCE_PATH.deref();
+		Object line = LINE_BEFORE.deref();
+		Object col = COLUMN_BEFORE.deref();
+		String key = String.valueOf(path) + ':' + String.valueOf(line) + ':' + String.valueOf(col) + ':' + kind + ':' + String.valueOf(form);
+		return Integer.toUnsignedString(key.hashCode(), 36);
+	}
 
 static final Symbol DEF = Symbol.intern("def");
 static final Symbol LOOP = Symbol.intern("loop*");
@@ -4555,12 +4562,12 @@ static public class FnExpr extends ObjExpr{
 
 		if(RT.second(form) instanceof Symbol) {
 			nm = (Symbol) RT.second(form);
-			name = nm.name + "__" + RT.nextID();
+			name = nm.name + "__" + stableID("fn", form);
 		} else {
 			if(name == null)
-				name = "fn__" + RT.nextID();
+				name = "fn__" + stableID("fn", form);
 			else if (enclosingMethod != null)
-				name += "__" + RT.nextID();
+				name += "__" + stableID("nested-fn", form);
 		}
 
 		String simpleName = munge(name).replace(".", "_DOT_");
@@ -7752,7 +7759,7 @@ public static Object eval(Object form, boolean freshLoader) {
 						&& ((Symbol) RT.first(form)).name.startsWith("def"))))
 				{
 				ObjExpr fexpr = (ObjExpr) analyze(C.EXPRESSION, RT.list(FN, PersistentVector.EMPTY, form),
-													"eval" + RT.nextID());
+													"eval" + stableID("eval", form));
 				IFn fn = (IFn) fexpr.eval();
 				return fn.invoke();
 				}
@@ -8536,7 +8543,7 @@ static public class NewInstanceExpr extends ObjExpr{
 		String basename = enclosingMethod != null ?
 		                  (trimGenID(enclosingMethod.objx.name) + "$")
 		                 : (munge(currentNS().name.name) + "$");
-		String simpleName = "reify__" + RT.nextID();
+		String simpleName = "reify__" + stableID("reify", form);
 		String classname = basename + simpleName;
 
 		ISeq rform = RT.next(form);
