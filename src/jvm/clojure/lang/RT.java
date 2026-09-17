@@ -12,6 +12,11 @@
 
 package clojure.lang;
 
+import clojure.asm.ClassReader;
+import clojure.asm.ClassVisitor;
+import clojure.asm.FieldVisitor;
+import clojure.asm.Opcodes;
+
 import java.net.MalformedURLException;
 import java.net.URISyntaxException;
 import java.net.URI;
@@ -31,6 +36,8 @@ import java.net.URL;
 import java.net.JarURLConnection;
 import java.nio.charset.Charset;
 import java.net.URLConnection;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 public class RT{
 
@@ -428,8 +435,9 @@ static void compile(String cljfile) throws IOException{
         InputStream ins = resourceAsStream(baseLoader(), cljfile);
 	if(ins != null) {
 		try {
-			Compiler.compile(new InputStreamReader(ins, UTF8), cljfile,
-			                 cljfile.substring(1 + cljfile.lastIndexOf("/")));
+			byte[] source = readBytes(ins);
+			Compiler.compile(new InputStreamReader(new ByteArrayInputStream(source), UTF8), cljfile,
+			                 cljfile.substring(1 + cljfile.lastIndexOf("/")), sha256(source));
 		}
 		finally {
 			ins.close();
@@ -438,6 +446,84 @@ static void compile(String cljfile) throws IOException{
 	}
 	else
 		throw new FileNotFoundException("Could not locate Clojure resource on classpath: " + cljfile);
+}
+
+private static byte[] readBytes(InputStream ins) throws IOException{
+	ByteArrayOutputStream out = new ByteArrayOutputStream();
+	byte[] buffer = new byte[8192];
+	for(int n = ins.read(buffer); n >= 0; n = ins.read(buffer))
+		if(n > 0)
+			out.write(buffer, 0, n);
+	return out.toByteArray();
+}
+
+private static String sha256(byte[] bytes){
+	try {
+		return hex(MessageDigest.getInstance("SHA-256").digest(bytes));
+	}
+	catch(NoSuchAlgorithmException e) {
+		throw new RuntimeException(e);
+	}
+}
+
+private static String sha256(URL url) throws IOException{
+	URLConnection connection = url.openConnection();
+	try {
+		try(InputStream ins = connection.getInputStream()) {
+			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			byte[] buffer = new byte[8192];
+			for(int n = ins.read(buffer); n >= 0; n = ins.read(buffer))
+				if(n > 0)
+					digest.update(buffer, 0, n);
+			return hex(digest.digest());
+		}
+	}
+	catch(NoSuchAlgorithmException e) {
+		throw new RuntimeException(e);
+	}
+}
+
+private static String hex(byte[] bytes){
+	char[] chars = new char[bytes.length * 2];
+	final char[] digits = "0123456789abcdef".toCharArray();
+	for(int i = 0; i < bytes.length; i++) {
+		int b = bytes[i] & 0xff;
+		chars[i * 2] = digits[b >>> 4];
+		chars[i * 2 + 1] = digits[b & 0xf];
+	}
+	return new String(chars);
+}
+
+private static String classSourceHash(URL classURL) throws IOException{
+	URLConnection connection = classURL.openConnection();
+	try(InputStream ins = connection.getInputStream()) {
+		final String[] result = new String[1];
+		new ClassReader(ins).accept(new ClassVisitor(Opcodes.ASM6) {
+			@Override
+			public FieldVisitor visitField(int access, String name, String descriptor,
+			                              String signature, Object value){
+				if(Compiler.SOURCE_HASH_FIELD.equals(name) && "Ljava/lang/String;".equals(descriptor)
+				   && value instanceof String)
+					result[0] = (String) value;
+				return null;
+			}
+		}, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+		return result[0];
+	}
+}
+
+private static boolean classIsCurrent(URL classURL, String classfile,
+	                                    URL sourceURL, String sourcefile) throws IOException{
+	try {
+		String classHash = classSourceHash(classURL);
+		if(classHash != null)
+			return classHash.equals(sha256(sourceURL));
+	}
+	catch(IOException | RuntimeException ignored) {
+		// Old AOT classes, and classes produced by an incompatible/partially-written compiler,
+		// have no usable hash. Preserve the historical mtime behaviour for those artifacts.
+	}
+	return lastModified(classURL, classfile) > lastModified(sourceURL, sourcefile);
 }
 
 static public void load(String scriptbase) throws IOException, ClassNotFoundException{
@@ -459,7 +545,7 @@ static public void load(String scriptbase, boolean failIfNotFound) throws IOExce
 
 	if((classURL != null &&
 	    (cljURL == null
-	     || lastModified(classURL, classfile) > lastModified(cljURL, scriptfile)))
+	     || classIsCurrent(classURL, classfile, cljURL, scriptfile)))
 	   || classURL == null) {
 		try {
 			Var.pushThreadBindings(

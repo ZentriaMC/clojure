@@ -44,6 +44,8 @@ import org.objectweb.asm.util.CheckClassAdapter;
 //*/
 
 public class Compiler implements Opcodes{
+	/** Name of the synthetic field carrying the exact source bytes used for AOT. */
+	static final String SOURCE_HASH_FIELD = "__clojureSourceHash";
 	// Syntax-quote auto-gensyms end in __<RT.nextID>__auto__. Explicit gensym
 	// prefixes ending in "__" (including the default "G__") end in <RT.nextID>.
 	// Match those language-level shapes rather than names chosen by individual macros.
@@ -8426,6 +8428,15 @@ static void compile1(GeneratorAdapter gen, ObjExpr objx, Object form) {
 }
 
 public static Object compile(Reader rdr, String sourcePath, String sourceName) throws IOException{
+	return compile(rdr, sourcePath, sourceName, null);
+}
+
+/**
+ * Compile a source form, optionally recording the source-content hash in the generated loader
+ * class.  The three-argument overload above intentionally retains the historical API for tools
+ * which call Compiler directly; RT supplies the hash for normal file compilation.
+ */
+public static Object compile(Reader rdr, String sourcePath, String sourceName, String sourceHash) throws IOException{
 	if(COMPILE_PATH.deref() == null)
 		throw Util.runtimeException("*compile-path* not set");
 
@@ -8472,6 +8483,9 @@ public static Object compile(Reader rdr, String sourcePath, String sourceName) t
 		ClassWriter cw = classWriter();
 		ClassVisitor cv = cw;
 		cv.visit(V1_8, ACC_PUBLIC + ACC_SUPER, objx.internalName, null, "java/lang/Object", null);
+		if(sourceHash != null)
+			cv.visitField(ACC_PUBLIC + ACC_STATIC + ACC_FINAL + ACC_SYNTHETIC,
+			              SOURCE_HASH_FIELD, "Ljava/lang/String;", null, sourceHash).visitEnd();
 
 		//static load method
 		GeneratorAdapter gen = new GeneratorAdapter(ACC_PUBLIC + ACC_STATIC,

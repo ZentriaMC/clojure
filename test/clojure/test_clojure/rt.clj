@@ -11,6 +11,10 @@
 (ns clojure.test-clojure.rt
   (:require [clojure.string :as string]
             clojure.set)
+  (:import (clojure.lang Compiler DynamicClassLoader RT)
+           (java.io File)
+           (java.nio.file Files)
+           (java.nio.file.attribute FileAttribute))
   (:use clojure.test clojure.test-helper))
 
 (defn bare-rt-print
@@ -102,3 +106,95 @@
       (is (string/starts-with? e1 "REJECTED"))
       (is (= v1 (ns-resolve ns1 'foo))))))
 
+(defn- delete-tree! [^File root]
+  (doseq [^File file (reverse (file-seq root))]
+    (.delete file)))
+
+(defn- with-aot-artifact
+  ([source-body f]
+   (with-aot-artifact source-body false f))
+  ([source-body legacy? f]
+   (let [root (.toFile (Files/createTempDirectory "clojure-rt-aot" (make-array FileAttribute 0)))
+         source-root (doto (File. root "source") .mkdirs)
+         classes-root (doto (File. root "classes") .mkdirs)
+         id (str (System/nanoTime))
+         ns-sym (symbol (str "rt_aot_" id))
+         ns-path (str ns-sym)
+         source-file (File. source-root (str ns-path ".clj"))
+         loader (DynamicClassLoader.)]
+     (try
+       (spit source-file (str "(ns " ns-sym ")\n" source-body "\n"))
+       (.addURL loader (.toURL (.toURI source-root)))
+       (.addURL loader (.toURL (.toURI classes-root)))
+       (let [previous (System/getProperty "clojure.rt.aot.mode")]
+         (try
+           (System/setProperty "clojure.rt.aot.mode" "compile")
+           (binding [*compile-path* (.getPath classes-root)]
+             (with-bindings {Compiler/LOADER loader}
+               (if legacy?
+                 (Compiler/compile (java.io.StringReader. (slurp source-file))
+                                   (str ns-path ".clj") (str ns-path ".clj"))
+                 (clojure.core/compile ns-sym))))
+           (finally
+             (if previous
+               (System/setProperty "clojure.rt.aot.mode" previous)
+               (System/clearProperty "clojure.rt.aot.mode")))))
+       (when (find-ns ns-sym)
+         (remove-ns ns-sym))
+       (f {:classes-root classes-root
+           :loader loader
+           :ns-path ns-path
+           :ns-sym ns-sym
+           :source-file source-file})
+       (finally
+         (when (find-ns ns-sym)
+           (remove-ns ns-sym))
+         (delete-tree! root))))))
+
+(deftest aot-source-hash-ignores-mtime-for-unchanged-source
+  (testing "an unchanged source file does not force source evaluation when newer than its class"
+    (with-aot-artifact
+      "(defmacro marker [] (if (= \"compile\" (System/getProperty \"clojure.rt.aot.mode\")) :compiled :source))\n(def value (marker))"
+      (fn [{:keys [^File classes-root ^DynamicClassLoader loader ns-path ns-sym ^File source-file]}]
+        (let [class-file (File. classes-root (str ns-path "__init.class"))]
+          (.setLastModified class-file 1000)
+          (.setLastModified source-file 2000)
+          (let [previous (System/getProperty "clojure.rt.aot.mode")]
+            (try
+              (System/setProperty "clojure.rt.aot.mode" "source")
+              (with-bindings {Compiler/LOADER loader}
+                (RT/load ns-path))
+              (is (= :compiled @(ns-resolve ns-sym 'value)))
+              (is (= 64 (count (.get (.getDeclaredField
+                                       (.loadClass loader (str ns-path "__init"))
+                                       "__clojureSourceHash") nil))))
+              (finally
+                (if previous
+                  (System/setProperty "clojure.rt.aot.mode" previous)
+                  (System/clearProperty "clojure.rt.aot.mode"))))))))))
+
+(deftest aot-source-hash-detects-changed-source-despite-mtime
+  (testing "changed source wins even when its mtime is older than its class"
+    (with-aot-artifact
+      "(def value :old)"
+      (fn [{:keys [^File classes-root ^DynamicClassLoader loader ns-path ns-sym ^File source-file]}]
+        (let [class-file (File. classes-root (str ns-path "__init.class"))]
+          (spit source-file (str "(ns " ns-sym ")\n(def value :changed)\n"))
+          (.setLastModified class-file 2000)
+          (.setLastModified source-file 1000)
+          (with-bindings {Compiler/LOADER loader}
+            (RT/load ns-path))
+          (is (= :changed @(ns-resolve ns-sym 'value))))))))
+
+(deftest aot-without-source-hash-retains-mtime-behavior
+  (testing "loader classes produced without hash metadata use the legacy mtime comparison"
+    (with-aot-artifact
+      "(def value :old)" true
+      (fn [{:keys [^File classes-root ^DynamicClassLoader loader ns-path ns-sym ^File source-file]}]
+        (let [class-file (File. classes-root (str ns-path "__init.class"))]
+          (spit source-file (str "(ns " ns-sym ")\n(def value :changed)\n"))
+          (.setLastModified class-file 2000)
+          (.setLastModified source-file 1000)
+          (with-bindings {Compiler/LOADER loader}
+            (RT/load ns-path))
+          (is (= :old @(ns-resolve ns-sym 'value))))))))
